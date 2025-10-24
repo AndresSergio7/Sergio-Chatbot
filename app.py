@@ -85,7 +85,7 @@ if st.button("Send", type="primary", key="send_button_main") and user_q.strip():
 
     st.session_state.history.append(("You", user_q))
     st.session_state.history.append(("Bot", answer))
-    st.experimental_rerun()
+    st.rerun()
 
 
 
