@@ -113,11 +113,9 @@ def setup_rag(txt_path, pdf_path, model_name, api_key):
     # 5. Define RAG Prompt
     # **THIS IS THE CRITICAL INSTRUCTION TO RESTRICT THE AI'S ANSWERS**
     template = """
-    You are Sergio's helpful CV assistant. Your ONLY job is to answer questions about Sergio
-    based EXCLUSIVELY on the provided context.
-    
-    If the answer cannot be found in the context, you MUST state, "I am only able to answer
-    questions based on the provided CV and about me files, and I cannot find that information there."
+    Eres el asistente de cv de Sergio tu trabajo es responder preguntas sobre su vida profesional y personal.
+    No hable sobre temas que no estan en los documentos about_me.txt y cv.pdf. 
+    Se amigable y cordial tambien motiva a que la persona haga mas preguntas"
     
     Context:
     {context}
