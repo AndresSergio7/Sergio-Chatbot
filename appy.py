@@ -64,11 +64,13 @@ if "history" not in st.session_state:
 user_q = st.text_input("Your message", placeholder="What do you want to know about me?")
 
 # ---- Core chat (direct OpenAI call) ----
-if st.button("Send", type="primary") and user_q.strip():
-    import openai
-    from openai import OpenAI
+# ---- Prompt input ----
+user_q = st.text_input("Your message", placeholder="What do you want to know about me?")
 
-    os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
+# ---- Core chat (direct OpenAI call, no LangChain) ----
+if st.button("Send", type="primary") and user_q.strip():
+    from openai import OpenAI  # ✅ only this import
+
     client = OpenAI(api_key=OPENAI_API_KEY)
 
     try:
@@ -87,6 +89,7 @@ if st.button("Send", type="primary") and user_q.strip():
     st.session_state.history.append(("You", user_q))
     st.session_state.history.append(("Bot", answer))
     st.experimental_rerun()
+
 
 # ---- Show chat history ----
 if st.session_state.history:
