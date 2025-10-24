@@ -1,3 +1,10 @@
 streamlit==1.39.0
 openai
 pymupdf==1.24.9
+tiktoken
+langchain
+langchain-openai
+langchain-community
+langchain-text-splitters
+chromadb
+pypdf
