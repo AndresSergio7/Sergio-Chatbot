@@ -58,3 +58,42 @@ st.caption("Ask about my experience, projects, and background. The bot can use y
 if "history" not in st.session_state:
     st.session_state.history = []
 
+
+# ---- Prompt input ----
+user_q = st.text_input("Your message", placeholder="What do you want to know about me?")
+
+# ---- Core chat logic ----
+if st.button("Send", type="primary") and user_q.strip():
+    ChatOpenAI, OpenAIEmbeddings, RecursiveCharacterTextSplitter, Chroma = _lazy_imports()
+    llm = ChatOpenAI(model=model_choice, temperature=temperature, openai_api_key=OPENAI_API_KEY)
+
+    # For now, skip RAG (just direct chat)
+    try:
+        resp = llm.invoke(f"You are Sergio's AI assistant. {user_q}")
+        answer = getattr(resp, "content", str(resp))
+    except Exception as e:
+        answer = f"Error contacting OpenAI: {e}"
+
+    st.session_state.history.append(("You", user_q))
+    st.session_state.history.append(("Bot", answer))
+    st.experimental_rerun()
+
+# ---- Show chat history ----
+if st.session_state.history:
+    st.markdown("### Conversation")
+    for who, msg in st.session_state.history:
+        if who == "You":
+            st.markdown(
+                f"<div style='text-align:right;background:#e8f5e9;padding:8px;border-radius:8px;margin:6px 0;'>🧑‍💬 {msg}</div>",
+                unsafe_allow_html=True
+            )
+        else:
+            st.markdown(
+                f"<div style='text-align:left;background:#fff;padding:8px;border-radius:8px;margin:6px 0;border-left:4px solid #4CAF50;'>🤖 {msg}</div>",
+                unsafe_allow_html=True
+            )
+
+st.caption("Tip: Add OPENAI_API_KEY in Streamlit Cloud → Settings → Secrets.")
+
+
+
