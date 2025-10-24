@@ -58,19 +58,16 @@ st.caption("Ask about my experience, projects, and background. The bot can use y
 if "history" not in st.session_state:
     st.session_state.history = []
 
-
 # ---- Prompt input ----
-# ---- Prompt input ----
-user_q = st.text_input("Your message", placeholder="What do you want to know about me?")
-
-# ---- Core chat (direct OpenAI call) ----
-# ---- Prompt input ----
-user_q = st.text_input("Your message", placeholder="What do you want to know about me?")
+user_q = st.text_input(
+    "Your message",
+    placeholder="What do you want to know about me?",
+    key="chat_input_main",
+)
 
 # ---- Core chat (direct OpenAI call, no LangChain) ----
-if st.button("Send", type="primary") and user_q.strip():
-    from openai import OpenAI  # ✅ only this import
-
+if st.button("Send", type="primary", key="send_button_main") and user_q.strip():
+    from openai import OpenAI
     client = OpenAI(api_key=OPENAI_API_KEY)
 
     try:
@@ -89,6 +86,8 @@ if st.button("Send", type="primary") and user_q.strip():
     st.session_state.history.append(("You", user_q))
     st.session_state.history.append(("Bot", answer))
     st.experimental_rerun()
+
+
 
 
 # ---- Show chat history ----
