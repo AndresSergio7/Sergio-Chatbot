@@ -83,23 +83,25 @@ def setup_rag(txt_path, pdf_path, model_name, api_key):
     st.session_state.VECTORSTORE_READY = False
     documents = []
 
-    # 1. Load TXT file
-    if Path(txt_path).exists():
-        with open(txt_path, 'r', encoding='utf-8') as f:
-            documents.append(f.read())
+   # ... inside setup_rag ...
+# 1. Load TXT file
+if Path(txt_path).exists():
+    with open(txt_path, 'r', encoding='utf-8') as f:
+        documents.append(f.read()) # <-- If this fails, no content is loaded
 
-    # 2. Load PDF file
-    if Path(pdf_path).exists():
-        try:
-            reader = pypdf.PdfReader(pdf_path)
-            for page in reader.pages:
-                documents.append(page.extract_text())
-        except Exception as e:
-            st.warning(f"Could not parse PDF file {pdf_path}: {e}")
-            
-    if not documents:
-        st.error("No valid documents found (about_me.txt or CV.pdf). Cannot run chatbot.")
-        st.stop()
+# 2. Load PDF file
+if Path(pdf_path).exists():
+    try:
+        reader = pypdf.PdfReader(pdf_path)
+        for page in reader.pages:
+            documents.append(page.extract_text()) # <-- If this fails, the 'documents' list is empty
+    except Exception as e:
+        st.warning(f"Could not parse PDF file {pdf_path}: {e}")
+        
+if not documents:
+    st.error("No valid documents found (about_me.txt or CV.pdf). Cannot run chatbot.")
+    st.stop() # <-- THIS IS WHERE THE APP STOPS IF IT HAS NO DATA
+# ... rest of the function ...
 
     # 3. Split documents
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
