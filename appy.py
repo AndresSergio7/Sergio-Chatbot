@@ -60,19 +60,29 @@ if "history" not in st.session_state:
 
 
 # ---- Prompt input ----
+# ---- Prompt input ----
 user_q = st.text_input("Your message", placeholder="What do you want to know about me?")
 
-# ---- Core chat logic ----
+# ---- Core chat (direct OpenAI call) ----
 if st.button("Send", type="primary") and user_q.strip():
-    ChatOpenAI, OpenAIEmbeddings, RecursiveCharacterTextSplitter, Chroma = _lazy_imports()
-    llm = ChatOpenAI(model=model_choice, temperature=temperature, openai_api_key=OPENAI_API_KEY)
+    import openai
+    from openai import OpenAI
 
-    # For now, skip RAG (just direct chat)
+    os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
+    client = OpenAI(api_key=OPENAI_API_KEY)
+
     try:
-        resp = llm.invoke(f"You are Sergio's AI assistant. {user_q}")
-        answer = getattr(resp, "content", str(resp))
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are Sergio's helpful CV assistant."},
+                {"role": "user", "content": user_q},
+            ],
+            temperature=0,
+        )
+        answer = resp.choices[0].message.content
     except Exception as e:
-        answer = f"Error contacting OpenAI: {e}"
+        answer = f"OpenAI error: {e}"
 
     st.session_state.history.append(("You", user_q))
     st.session_state.history.append(("Bot", answer))
@@ -94,6 +104,7 @@ if st.session_state.history:
             )
 
 st.caption("Tip: Add OPENAI_API_KEY in Streamlit Cloud → Settings → Secrets.")
+
 
 
 
