@@ -55,4 +55,6 @@ st.markdown("<h2 style='text-align:center;'>🤖 Sergio CV Chatbot</h2>", unsafe
 st.caption("Ask about my experience, projects, and background. The bot can use your about_me.txt and CV.pdf as context.")
 
 # ---- Session State ----
-if "history" not in st.sessio
+if "history" not in st.session_state:
+    st.session_state.history = []
+
