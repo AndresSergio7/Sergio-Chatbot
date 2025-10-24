@@ -12,9 +12,12 @@ def _lazy_imports():
         from langchain_openai import ChatOpenAI, OpenAIEmbeddings
         from langchain_text_splitters import RecursiveCharacterTextSplitter
         from langchain_community.vectorstores import Chroma
-        from langchain.schema.runnable import RunnablePassthrough
-        from langchain.schema.output_parser import StrOutputParser
+        
+        # *** CHANGE THESE IMPORTS ***
+        from langchain_core.runnables import RunnablePassthrough # Changed 'schema' to 'core' and 'schema.runnable' to 'core.runnables'
+        from langchain_core.output_parsers import StrOutputParser # Changed 'schema' to 'core' and 'schema.output_parser' to 'core.output_parsers'
         from langchain_core.prompts import ChatPromptTemplate
+        
         import pypdf
         return ChatOpenAI, OpenAIEmbeddings, RecursiveCharacterTextSplitter, Chroma, \
                RunnablePassthrough, StrOutputParser, ChatPromptTemplate, pypdf
