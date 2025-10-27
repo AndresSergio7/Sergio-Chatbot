@@ -1,7 +1,8 @@
 streamlit
-langchain
 langchain-core
 langchain-openai
 langchain-community
+langchain==0.2.7 
+pydantic==2.7.4
 pymupdf
 chroma-db
