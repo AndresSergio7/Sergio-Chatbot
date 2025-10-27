@@ -9,3 +9,6 @@ langchain-text-splitters
 chromadb
 pymupdf
 pypdf                     
+langchain
+langchain-core
+langchain-community
