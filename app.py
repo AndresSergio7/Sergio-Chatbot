@@ -1,184 +1,136 @@
 import os
 import streamlit as st
-from pathlib import Path
-
-# --- CORE IMPORTS for the new RAG implementation ---
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain.chains import create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_community.vectorstores import Chroma
 from langchain_community.document_loaders import TextLoader, PyMuPDFLoader
-from langchain_core.prompts import ChatPromptTemplate
-from langchain.chains import create_stuff_documents_chain
-from langchain.retrieval import create_retrieval_chain
-# Note: You must ensure all these packages (plus langchain-core) are in requirements.txt
-# --- END CORE IMPORTS ---
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-st.set_page_config(page_title="Sergio CV Chatbot", page_icon="🤖", layout="centered")
+# --- Streamlit Page Settings ---
+st.set_page_config(page_title="Sergio AI Chatbot", page_icon="🤖", layout="centered")
 
-# ---- Secrets / API Key ----
+# --- Secrets / API key ---
 OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
-    st.error("Missing OPENAI_API_KEY. Add it in Streamlit Secrets (or env var) and reload.")
+    st.error("Missing OPENAI_API_KEY. Add it in Streamlit Secrets or env vars.")
     st.stop()
 
-# --- Placeholder for Sidebar File Uploads (Removed logic to simplify) ---
-st.sidebar.header("Data sources")
-st.sidebar.write("Using default files from the repository.")
+# --- Session State ---
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+if "user_input" not in st.session_state:
+    st.session_state["user_input"] = ""
 
-# --- Model selector ---
-st.sidebar.header("Model")
-model_choice = st.sidebar.selectbox(
-    "Choose model",
-    ["gpt-4o-mini", "gpt-4-turbo"],
-    index=0
-)
-temperature = st.sidebar.slider("Temperature", 0.0, 1.0, 0.0, 0.1)
-
-# Initialize LLM (needed for the chains)
+# --- Model (update from deprecated gpt-3.5-turbo) ---
 llm = ChatOpenAI(
-    model=model_choice, 
-    temperature=temperature, 
+    model="gpt-4o-mini",  # ← replace deprecated 3.5
+    temperature=0,
     openai_api_key=OPENAI_API_KEY
 )
 
-# =========================================================================
-# === NEW RAG IMPLEMENTATION (Replacing all previous RAG setup) ===
-# =========================================================================
+# --- Load documents (with safety checks) ---
+missing = []
+TXT_PATH = "about_me.txt"
+PDF_PATH = "Valleleal_Sergio_CV_Español.pdf"
 
-@st.cache_resource(show_spinner="Preparing knowledge base...")
-def setup_knowledge_base(api_key):
-    """
-    Loads documents, splits them, and creates/loads a persistent Chroma vector store.
-    """
-    # --- Load documents (with safety checks) ---
-    missing = []
-    TXT_PATH = "about_me.txt"
-    # NOTE: Ensure this PDF name exactly matches the file name in your repo!
-    PDF_PATH = "CV.pdf" # Adjusted back to generic name, change if needed: "Valleleal_Sergio_CV_Español.pdf" 
+if not os.path.exists(TXT_PATH):
+    missing.append(TXT_PATH)
+if not os.path.exists(PDF_PATH):
+    missing.append(PDF_PATH)
 
-    if not os.path.exists(TXT_PATH):
-        missing.append(TXT_PATH)
-    if not os.path.exists(PDF_PATH):
-        missing.append(PDF_PATH)
+all_docs = []
+if missing:
+    st.warning(f"Missing files: {', '.join(missing)}. The bot will answer without RAG.")
+else:
+    text_loader = TextLoader(TXT_PATH)
+    pdf_loader = PyMuPDFLoader(PDF_PATH)
+    all_docs = text_loader.load() + pdf_loader.load()
 
-    all_docs = []
-    if missing:
-        st.warning(f"Missing files: {', '.join(missing)}. The bot will answer without RAG.")
+# --- Split & Vectorstore (persist and reuse) ---
+retriever = None
+if all_docs:
+    splitter = RecursiveCharacterTextSplitter(chunk_size=300, chunk_overlap=50)
+    docs = splitter.split_documents(all_docs)
+
+    persist_dir = ".chroma"
+    embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=OPENAI_API_KEY)
+
+    # If DB exists, reuse; else build and persist
+    if os.path.exists(persist_dir) and os.listdir(persist_dir):
+        vectorstore = Chroma(persist_directory=persist_dir, embedding_function=embeddings)
     else:
-        try:
-            text_loader = TextLoader(TXT_PATH)
-            pdf_loader = PyMuPDFLoader(PDF_PATH)
-            all_docs = text_loader.load() + pdf_loader.load()
-        except Exception as e:
-            st.error(f"Error loading files: {e}. Bot will run without RAG.")
-            
+        vectorstore = Chroma.from_documents(docs, embedding=embeddings, persist_directory=persist_dir)
+        vectorstore.persist()
 
-    # --- Split & Vectorstore (persist and reuse) ---
-    retriever = None
-    if all_docs:
-        splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-        docs = splitter.split_documents(all_docs)
+    retriever = vectorstore.as_retriever()
 
-        persist_dir = ".chroma"
-        embeddings = OpenAIEmbeddings(model="text-embedding-3-small", openai_api_key=api_key)
-
-        # If DB exists, reuse; else build and persist
-        if os.path.exists(persist_dir) and os.listdir(persist_dir):
-            vectorstore = Chroma(persist_directory=persist_dir, embedding_function=embeddings)
-        else:
-            vectorstore = Chroma.from_documents(docs, embedding=embeddings, persist_directory=persist_dir)
-            vectorstore.persist()
-            
-        retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
-        st.session_state.VECTORSTORE_READY = True
-        
-    return retriever
-
-# Run the setup function once
-if "retriever" not in st.session_state:
-    st.session_state.retriever = setup_knowledge_base(OPENAI_API_KEY)
-    st.session_state.VECTORSTORE_READY = st.session_state.retriever is not None
-
-
-# --- QA chain (Defined outside the setup_knowledge_base function) ---
+# --- QA chain ---
 prompt = ChatPromptTemplate.from_template(
-    """
-    Eres el asistente de cv de Sergio tu trabajo es responder preguntas sobre su vida profesional y personal.
-    No hable sobre temas que no estan en los documentos about_me.txt y cv.pdf. 
-    Se amigable y cordial tambien motiva a que la persona haga mas preguntas"
-    
-    Responde basado EXCLUSIVAMENTE en el siguiente contexto.
-    Si la respuesta no se encuentra en el contexto, debes decir: "Lo siento, solo puedo responder preguntas
-    basadas en el CV de Sergio y la información proporcionada, y no encuentro esa información."
-    
-    Contexto:
-    {context}
-    
-    Pregunta: {input}
-    """
+    "Responde basado en el contexto si existe; si no, responde con lo que sepas y aclara la falta de contexto.\n"
+    "{context}\n\nPregunta: {input}"
 )
-
 document_chain = create_stuff_documents_chain(llm, prompt)
 
-# Define the final QA chain based on whether a retriever was successfully created
-if st.session_state.retriever:
-    qa_chain = create_retrieval_chain(st.session_state.retriever, document_chain)
-    st.session_state.QA_CHAIN = qa_chain
+if retriever:
+    qa_chain = create_retrieval_chain(retriever, document_chain)
 else:
-    # Fallback: no RAG; answer directly using the LLM
-    def fallback_chain(inputs):
+    # Fallback: no retriever; answer directly
+    def qa_chain(inputs):
         q = inputs.get("input", "")
         resp = llm.invoke(q)
         return {"answer": resp.content}
-    st.session_state.QA_CHAIN = fallback_chain
 
+# --- Styles & Header ---
+st.markdown("""
+    <style>
+        .message-container { max-height: 500px; overflow-y: auto; padding: 1rem; background-color: #f4f4f4;
+                             border-radius: 10px; margin-bottom: 1rem; }
+        .user-msg { background-color: #DCF8C6; padding: 10px; border-radius: 10px; margin: 5px 0; text-align: right; }
+        .bot-msg { background-color: #FFF; padding: 10px; border-radius: 10px; margin: 5px 0; text-align: left; border-left: 4px solid #4CAF50; }
+    </style>
+""", unsafe_allow_html=True)
 
-# =========================================================================
-# --- UI and Chat Logic ---
+st.markdown("<h2 style='text-align:center;'>🤖 Sergio AI Chatbot</h2>", unsafe_allow_html=True)
+st.markdown("<p style='text-align:center;'>¡Pregúntame sobre mi experiencia, proyectos o intereses personales!</p>", unsafe_allow_html=True)
 
-st.markdown("<h2 style='text-align:center;'>🤖 Sergio CV Chatbot</h2>", unsafe_allow_html=True)
-st.caption("Ask about my experience, projects, and background. Answers are restricted to the provided documents.")
+st.markdown("""
+    <div style='text-align: center;'>
+        <h1 style='font-size: 2em;'>Conoce más sobre mi experiencia y vida personal.</h1>
+        <p style='font-size: 1.1em; max-width: 700px; margin: 0 auto;'>
+            Hola, mi nombre es Sergio y creé este chatbot sencillo usando <b>LangChain</b>, <b>OpenAI</b> y <b>Streamlit</b>.
+            Usa mi CV y textos para responder sobre mí.<br><br>
+            <span style="color:gray;">Recuerda que las llamadas a la API tienen costo 🥲💸</span>
+        </p>
+    </div>
+""", unsafe_allow_html=True)
 
-# ---- Session State ----
-if "history" not in st.session_state:
-    st.session_state.history = []
+# --- Chat history ---
+st.markdown("<div class='message-container'>", unsafe_allow_html=True)
+for user_msg, bot_msg in st.session_state.chat_history:
+    st.markdown(f"<div class='user-msg'>🧑‍💬 {user_msg}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='bot-msg'>🤖 {bot_msg}</div>", unsafe_allow_html=True)
+st.markdown("</div>", unsafe_allow_html=True)
 
-# ---- Prompt input ----
-user_q = st.text_input(
-    "Your message",
-    placeholder="What do you want to know about me?",
-    key="chat_input_main",
-)
+# --- Input ---
+question = st.text_input("Type your message...", key="user_input")
 
-# ---- Core chat (LangChain RAG Call) ----
-if st.button("Send", type="primary", key="send_button_main") and user_q.strip():
-    
-    try:
-        # Run the RAG chain (or fallback chain)
-        response = st.session_state.QA_CHAIN.invoke({"input": user_q})
-        answer = response["answer"]
-        
-    except Exception as e:
-        answer = f"Chain error: {e}"
+# --- Send ---
+if st.button("Send") and st.session_state.get("user_input", ""):
+    with st.spinner("Thinking..."):
+        user_message = st.session_state["user_input"]
+        result = qa_chain({"input": user_message})  # works for both LC chain & fallback
+        answer = result.get("answer", "")
+        if not answer and hasattr(result, "content"):
+            answer = result.content
+        st.session_state.chat_history.append((user_message, answer))
 
-    st.session_state.history.append(("You", user_q))
-    st.session_state.history.append(("Bot", answer))
+    # clear and rerun for a clean box
+    del st.session_state["user_input"]
     st.rerun()
 
-# --- Show chat history (unchanged) ---
-
-if st.session_state.history:
-    st.markdown("### Conversation")
-    for who, msg in st.session_state.history:
-        if who == "You":
-            st.markdown(
-                f"<div style='text-align:right;background:#e8f5e9;padding:8px;border-radius:8px;margin:6px 0;'>🧑‍💬 {msg}</div>",
-                unsafe_allow_html=True
-            )
-        else:
-            st.markdown(
-                f"<div style='text-align:left;background:#fff;padding:8px;border-radius:8px;margin:6px 0;border-left:4px solid #4CAF50;'>🤖 {msg}</div>",
-                unsafe_allow_html=True
-            )
-
-st.caption("Tip: Add OPENAI_API_KEY in Streamlit Cloud → Settings → Secrets.")
+# --- Clear ---
+if st.button("Clear Chat"):
+    st.session_state.chat_history = []
+    st.rerun()
