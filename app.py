@@ -1,31 +1,17 @@
 import os
 import streamlit as st
 from pathlib import Path
-from io import BytesIO
 
-# --- RAG Setup: Imports and Functions ---
-
-# Lazy imports so the UI renders even if optional deps fail
-def _lazy_imports():
-    """Import RAG dependencies only when needed."""
-    try:
-        from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-        from langchain_text_splitters import RecursiveCharacterTextSplitter
-        from langchain_community.vectorstores import Chroma
-        
-        # *** CHANGE THESE IMPORTS ***
-        from langchain_core.runnables import RunnablePassthrough # Changed 'schema' to 'core' and 'schema.runnable' to 'core.runnables'
-        from langchain_core.output_parsers import StrOutputParser # Changed 'schema' to 'core' and 'schema.output_parser' to 'core.output_parsers'
-        from langchain_core.prompts import ChatPromptTemplate
-        
-        import pypdf
-        return ChatOpenAI, OpenAIEmbeddings, RecursiveCharacterTextSplitter, Chroma, \
-               RunnablePassthrough, StrOutputParser, ChatPromptTemplate, pypdf
-    except ImportError as e:
-        st.error(f"Missing RAG dependencies. Please check your requirements.txt: {e}")
-        st.stop()
-
-# --- Page Setup and Secrets Check ---
+# --- CORE IMPORTS for the new RAG implementation ---
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import Chroma
+from langchain_community.document_loaders import TextLoader, PyMuPDFLoader
+from langchain_core.prompts import ChatPromptTemplate
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain.chains import create_retrieval_chain
+# Note: You must ensure all these packages (plus langchain-core) are in requirements.txt
+# --- END CORE IMPORTS ---
 
 st.set_page_config(page_title="Sergio CV Chatbot", page_icon="🤖", layout="centered")
 
@@ -35,125 +21,123 @@ if not OPENAI_API_KEY:
     st.error("Missing OPENAI_API_KEY. Add it in Streamlit Secrets (or env var) and reload.")
     st.stop()
 
-# Load RAG components
-(ChatOpenAI, OpenAIEmbeddings, RecursiveCharacterTextSplitter, Chroma,
- RunnablePassthrough, StrOutputParser, ChatPromptTemplate, pypdf) = _lazy_imports()
-
-# --- Sidebar: Data sources ---
+# --- Placeholder for Sidebar File Uploads (Removed logic to simplify) ---
 st.sidebar.header("Data sources")
-st.sidebar.write("You can use the default files in the repo or upload your own.")
-
-default_txt_path = "about_me.txt"
-default_pdf_path = "CV.pdf"
-
-# Store file paths in session state
-if 'TXT_PATH' not in st.session_state: st.session_state.TXT_PATH = default_txt_path
-if 'PDF_PATH' not in st.session_state: st.session_state.PDF_PATH = default_pdf_path
-if 'VECTORSTORE_READY' not in st.session_state: st.session_state.VECTORSTORE_READY = False
-
-uploaded_txt = st.sidebar.file_uploader("Upload about_me.txt (optional)", type=["txt"])
-uploaded_pdf = st.sidebar.file_uploader("Upload CV PDF (optional)", type=["pdf"])
-
-# Save uploads to temp files if provided
-if uploaded_txt:
-    st.session_state.TXT_PATH = "about_me_uploaded.txt"
-    with open(st.session_state.TXT_PATH, "wb") as f:
-        f.write(uploaded_txt.read())
-
-if uploaded_pdf:
-    st.session_state.PDF_PATH = "cv_uploaded.pdf"
-    with open(st.session_state.PDF_PATH, "wb") as f:
-        f.write(uploaded_pdf.read())
+st.sidebar.write("Using default files from the repository.")
 
 # --- Model selector ---
 st.sidebar.header("Model")
 model_choice = st.sidebar.selectbox(
     "Choose model",
-    ["gpt-4o-mini", "gpt-4-turbo"], # Using a common modern model name for compatibility
+    ["gpt-4o-mini", "gpt-4-turbo"],
     index=0
 )
-
 temperature = st.sidebar.slider("Temperature", 0.0, 1.0, 0.0, 0.1)
 
-# --- RAG Functions ---
+# Initialize LLM (needed for the chains)
+llm = ChatOpenAI(
+    model=model_choice, 
+    temperature=temperature, 
+    openai_api_key=OPENAI_API_KEY
+)
+
+# =========================================================================
+# === NEW RAG IMPLEMENTATION (Replacing all previous RAG setup) ===
+# =========================================================================
 
 @st.cache_resource(show_spinner="Preparing knowledge base...")
-def setup_rag(txt_path, pdf_path, model_name, api_key):
-    """Parses files, creates embeddings, and initializes the RAG chain."""
-    st.session_state.VECTORSTORE_READY = False
-    documents = []
+def setup_knowledge_base(api_key):
+    """
+    Loads documents, splits them, and creates/loads a persistent Chroma vector store.
+    """
+    # --- Load documents (with safety checks) ---
+    missing = []
+    TXT_PATH = "about_me.txt"
+    # NOTE: Ensure this PDF name exactly matches the file name in your repo!
+    PDF_PATH = "CV.pdf" # Adjusted back to generic name, change if needed: "Valleleal_Sergio_CV_Español.pdf" 
 
-   # ... inside setup_rag ...
-# 1. Load TXT file
-if Path(txt_path).exists():
-    with open(txt_path, 'r', encoding='utf-8') as f:
-        documents.append(f.read()) # <-- If this fails, no content is loaded
+    if not os.path.exists(TXT_PATH):
+        missing.append(TXT_PATH)
+    if not os.path.exists(PDF_PATH):
+        missing.append(PDF_PATH)
 
-# 2. Load PDF file
-if Path(pdf_path).exists():
-    try:
-        reader = pypdf.PdfReader(pdf_path)
-        for page in reader.pages:
-            documents.append(page.extract_text()) # <-- If this fails, the 'documents' list is empty
-    except Exception as e:
-        st.warning(f"Could not parse PDF file {pdf_path}: {e}")
+    all_docs = []
+    if missing:
+        st.warning(f"Missing files: {', '.join(missing)}. The bot will answer without RAG.")
+    else:
+        try:
+            text_loader = TextLoader(TXT_PATH)
+            pdf_loader = PyMuPDFLoader(PDF_PATH)
+            all_docs = text_loader.load() + pdf_loader.load()
+        except Exception as e:
+            st.error(f"Error loading files: {e}. Bot will run without RAG.")
+            
+
+    # --- Split & Vectorstore (persist and reuse) ---
+    retriever = None
+    if all_docs:
+        splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        docs = splitter.split_documents(all_docs)
+
+        persist_dir = ".chroma"
+        embeddings = OpenAIEmbeddings(model="text-embedding-3-small", openai_api_key=api_key)
+
+        # If DB exists, reuse; else build and persist
+        if os.path.exists(persist_dir) and os.listdir(persist_dir):
+            vectorstore = Chroma(persist_directory=persist_dir, embedding_function=embeddings)
+        else:
+            vectorstore = Chroma.from_documents(docs, embedding=embeddings, persist_directory=persist_dir)
+            vectorstore.persist()
+            
+        retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+        st.session_state.VECTORSTORE_READY = True
         
-if not documents:
-    st.error("No valid documents found (about_me.txt or CV.pdf). Cannot run chatbot.")
-    st.stop() # <-- THIS IS WHERE THE APP STOPS IF IT HAS NO DATA
-# ... rest of the function ...
+    return retriever
 
-    # 3. Split documents
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-    texts = text_splitter.create_documents(documents)
+# Run the setup function once
+if "retriever" not in st.session_state:
+    st.session_state.retriever = setup_knowledge_base(OPENAI_API_KEY)
+    st.session_state.VECTORSTORE_READY = st.session_state.retriever is not None
 
-    # 4. Create Vector Store and Retriever
-    embeddings = OpenAIEmbeddings(openai_api_key=api_key)
-    vectorstore = Chroma.from_documents(texts, embeddings)
-    retriever = vectorstore.as_retriever()
-    
-    # 5. Define RAG Prompt
-    # **THIS IS THE CRITICAL INSTRUCTION TO RESTRICT THE AI'S ANSWERS**
-    template = """
+
+# --- QA chain (Defined outside the setup_knowledge_base function) ---
+prompt = ChatPromptTemplate.from_template(
+    """
     Eres el asistente de cv de Sergio tu trabajo es responder preguntas sobre su vida profesional y personal.
     No hable sobre temas que no estan en los documentos about_me.txt y cv.pdf. 
     Se amigable y cordial tambien motiva a que la persona haga mas preguntas"
     
-    Context:
+    Responde basado EXCLUSIVAMENTE en el siguiente contexto.
+    Si la respuesta no se encuentra en el contexto, debes decir: "Lo siento, solo puedo responder preguntas
+    basadas en el CV de Sergio y la información proporcionada, y no encuentro esa información."
+    
+    Contexto:
     {context}
     
-    Question: {question}
-    
-    Answer:
+    Pregunta: {input}
     """
-    prompt = ChatPromptTemplate.from_template(template)
-
-    # 6. Initialize LLM and RAG Chain
-    llm = ChatOpenAI(model=model_name, temperature=0, openai_api_key=api_key)
-    
-    # Define the RAG chain
-    rag_chain = (
-        {"context": retriever, "question": RunnablePassthrough()}
-        | prompt
-        | llm
-        | StrOutputParser()
-    )
-    
-    st.session_state.VECTORSTORE_READY = True
-    return rag_chain
-
-# Setup RAG chain (called only once)
-rag_chain = setup_rag(
-    st.session_state.TXT_PATH, 
-    st.session_state.PDF_PATH, 
-    model_choice, 
-    OPENAI_API_KEY
 )
 
-# --- Header and UI ---
+document_chain = create_stuff_documents_chain(llm, prompt)
 
-st.markdown("<h2 style='text-align:center;'>🤖 Sergio CV Chatbot (RAG)</h2>", unsafe_allow_html=True)
-st.caption("Ask about my experience, projects, and background. Answers are restricted to the context in about_me.txt and CV.pdf.")
+# Define the final QA chain based on whether a retriever was successfully created
+if st.session_state.retriever:
+    qa_chain = create_retrieval_chain(st.session_state.retriever, document_chain)
+    st.session_state.QA_CHAIN = qa_chain
+else:
+    # Fallback: no RAG; answer directly using the LLM
+    def fallback_chain(inputs):
+        q = inputs.get("input", "")
+        resp = llm.invoke(q)
+        return {"answer": resp.content}
+    st.session_state.QA_CHAIN = fallback_chain
+
+
+# =========================================================================
+# --- UI and Chat Logic ---
+
+st.markdown("<h2 style='text-align:center;'>🤖 Sergio CV Chatbot</h2>", unsafe_allow_html=True)
+st.caption("Ask about my experience, projects, and background. Answers are restricted to the provided documents.")
 
 # ---- Session State ----
 if "history" not in st.session_state:
@@ -168,15 +152,14 @@ user_q = st.text_input(
 
 # ---- Core chat (LangChain RAG Call) ----
 if st.button("Send", type="primary", key="send_button_main") and user_q.strip():
-    if not st.session_state.VECTORSTORE_READY:
-        st.error("Knowledge base is not ready. Please check file uploads and console logs.")
-        st.stop()
-
+    
     try:
-        # Run the RAG chain
-        answer = rag_chain.invoke(user_q)
+        # Run the RAG chain (or fallback chain)
+        response = st.session_state.QA_CHAIN.invoke({"input": user_q})
+        answer = response["answer"]
+        
     except Exception as e:
-        answer = f"RAG Chain error: {e}"
+        answer = f"Chain error: {e}"
 
     st.session_state.history.append(("You", user_q))
     st.session_state.history.append(("Bot", answer))
